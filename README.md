@@ -47,6 +47,11 @@ Model size: 18.00 GB (buffer: 2.00 GB)
 Status: OK - model fits with 7.88 GB to spare
 ```
 
+## Documentation
+
+- [MODEL_COMPATIBILITY.md](MODEL_COMPATIBILITY.md) - Sizing reference for GPUs, models, and quantizations (Q4_K_M, Q5_K_M, Q8_0, FP16) with KV cache tables and the mmproj trap for vision-language models.
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Field guide to the five CUDA OOM errors you will actually see, with a diagnostic checklist and notes on vLLM, llama.cpp, and Ollama quirks.
+
 ## Installation
 
 ### From source (recommended)
