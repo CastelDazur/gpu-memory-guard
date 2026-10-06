@@ -144,11 +144,11 @@ class TestFormatHumanOutput:
 
     def test_model_fits_message(self, single_gpu):
         out = format_human_output(single_gpu, model_size_gb=8.0)
-        assert "WILL fit" in out
+        assert "Estimated to fit" in out
 
     def test_model_too_large_message(self, single_gpu):
         out = format_human_output(single_gpu, model_size_gb=20.0)
-        assert "will NOT fit" in out
+        assert "Estimated NOT to fit" in out
 
 
 class TestFormatJsonOutput:
@@ -188,3 +188,64 @@ class TestEdgeCases:
         mock_info.return_value = rtx_5090
         fits, _ = check_vram(model_size_gb=27.0, buffer_gb=2.0)
         assert fits is True
+
+
+class TestMultiGpuNote:
+    def test_note_for_multiple_gpus(self, dual_gpu):
+        assert "needs the space on one card" in format_human_output(dual_gpu, model_size_gb=8.0)
+
+    def test_no_note_for_single_gpu(self, single_gpu):
+        assert "needs the space on one card" not in format_human_output(single_gpu, model_size_gb=8.0)
+
+
+class TestPynvmlName:
+    def _fake(self, name):
+        import types
+        return types.SimpleNamespace(
+            nvmlInit=lambda: None, nvmlShutdown=lambda: None, nvmlDeviceGetCount=lambda: 1,
+            nvmlDeviceGetHandleByIndex=lambda i: i, nvmlDeviceGetName=lambda h: name,
+            nvmlDeviceGetMemoryInfo=lambda h: types.SimpleNamespace(total=32 * 1024**3, used=2 * 1024**3, free=30 * 1024**3),
+            nvmlDeviceGetUtilizationRates=lambda h: types.SimpleNamespace(gpu=5),
+        )
+
+    def test_str_name(self):
+        from gpu_guard import get_pynvml_info
+        with patch.dict(sys.modules, {"pynvml": self._fake("NVIDIA Test GPU")}):
+            info = get_pynvml_info()
+        assert info is not None and info[0].name == "NVIDIA Test GPU"
+
+    def test_bytes_name(self):
+        from gpu_guard import get_pynvml_info
+        with patch.dict(sys.modules, {"pynvml": self._fake(b"NVIDIA Test GPU")}):
+            info = get_pynvml_info()
+        assert info is not None and info[0].name == "NVIDIA Test GPU"
+
+
+class TestExitCodes:
+    def _run(self, argv, gpus):
+        from gpu_guard import main
+        with patch("gpu_guard.get_gpu_info", return_value=gpus), patch.object(sys, "argv", ["gpu-guard"] + argv):
+            with pytest.raises(SystemExit) as e:
+                main()
+        return e.value.code
+
+    def test_fits(self, single_gpu):
+        assert self._run(["--model-size", "8", "--quiet"], single_gpu) == 0
+
+    def test_does_not_fit(self, single_gpu):
+        assert self._run(["--model-size", "20", "--quiet"], single_gpu) == 1
+
+    def test_no_gpu(self):
+        assert self._run(["--model-size", "8", "--quiet"], None) == 2
+
+    def test_status_only(self, single_gpu):
+        assert self._run([], single_gpu) == 0
+
+    def test_non_utf8_stdout_does_not_change_exit_code(self, single_gpu):
+        import io
+        from gpu_guard import main
+        out = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with patch("gpu_guard.get_gpu_info", return_value=single_gpu),                 patch.object(sys, "argv", ["gpu-guard", "--model-size", "8"]), patch.object(sys, "stdout", out):
+            with pytest.raises(SystemExit) as e:
+                main()
+        assert e.value.code == 0

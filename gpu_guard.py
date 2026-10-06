@@ -2,8 +2,9 @@
 """
 GPU Memory Guard - CLI utility to check VRAM before loading AI models.
 
-Prevents out-of-memory crashes by checking available GPU VRAM and
-estimating whether a model will fit with a safety buffer.
+Compares free GPU VRAM with a model size plus a safety buffer before loading.
+The result is an estimate: it does not include context/KV cache, runtime
+overhead or memory taken later by other processes.
 """
 
 import json
@@ -91,7 +92,9 @@ def get_pynvml_info() -> Optional[List[GPUInfo]]:
         gpus = []
         for i in range(device_count):
             handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-            name = pynvml.nvmlDeviceGetName(handle).decode("utf-8")
+            name = pynvml.nvmlDeviceGetName(handle)
+            if isinstance(name, bytes):  # older pynvml returns bytes, nvidia-ml-py returns str
+                name = name.decode("utf-8")
             mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
             util = pynvml.nvmlDeviceGetUtilizationRates(handle)
 
@@ -157,14 +160,14 @@ def check_vram(model_size_gb: float, buffer_gb: float = 0.5) -> Tuple[bool, str]
 
 def can_load_model(model_size_gb: float, buffer_gb: float = 0.5) -> bool:
     """
-    Check if a model can be loaded without OOM.
+    Estimate whether a model fits in free VRAM (summed across all GPUs).
 
     Args:
         model_size_gb: Model size in GB
         buffer_gb: Safety buffer in GB
 
     Returns:
-        True if the model fits, False otherwise
+        True if free VRAM >= model size + buffer, False otherwise
     """
     fits, _ = check_vram(model_size_gb, buffer_gb)
     return fits
@@ -187,6 +190,8 @@ def format_human_output(gpu_info, model_size_gb=None, buffer_gb=0.5):
 
     lines.append("\n" + "-" * 60)
     lines.append(f"Total available across all GPUs: {total_available:.2f}GB")
+    if len(gpu_info) > 1:
+        lines.append("Note: this is a sum. A model that is not split across GPUs needs the space on one card.")
 
     if model_size_gb is not None:
         required = model_size_gb + buffer_gb
@@ -197,10 +202,10 @@ def format_human_output(gpu_info, model_size_gb=None, buffer_gb=0.5):
 
         if total_available >= required:
             margin = total_available - required
-            lines.append(f"\u2713 Model WILL fit ({margin:.2f}GB margin)")
+            lines.append(f"\u2713 Estimated to fit ({margin:.2f}GB margin)")
         else:
             deficit = required - total_available
-            lines.append(f"\u2717 Model will NOT fit (need {deficit:.2f}GB more)")
+            lines.append(f"\u2717 Estimated NOT to fit (need {deficit:.2f}GB more)")
 
     return "\n".join(lines)
 
@@ -228,6 +233,10 @@ def format_json_output(gpu_info, model_size_gb=None, buffer_gb=0.5):
 
 def main():
     """CLI entry point."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            # a crash here would exit 1, which means "does not fit"
+            stream.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(
         description="GPU Memory Guard - Check VRAM before loading AI models",
         formatter_class=argparse.RawDescriptionHelpFormatter,

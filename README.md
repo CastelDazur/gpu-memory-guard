@@ -1,50 +1,57 @@
 # GPU Memory Guard
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![test](https://github.com/CastelDazur/gpu-memory-guard/actions/workflows/test.yml/badge.svg)](https://github.com/CastelDazur/gpu-memory-guard/actions/workflows/test.yml)
+[![PyPI](https://img.shields.io/pypi/v/gpu-memory-guard.svg)](https://pypi.org/project/gpu-memory-guard/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
-[![GitHub stars](https://img.shields.io/github/stars/CastelDazur/gpu-memory-guard?style=social)](https://github.com/CastelDazur/gpu-memory-guard/stargazers)
 
-A CLI utility that checks available GPU VRAM before you load AI models. Prevents OOM crashes that force a full system reboot.
+A small CLI that checks free NVIDIA GPU memory before you load a model. It compares free VRAM with the model size plus a safety buffer and tells you, in a terminal message or an exit code, whether the model is likely to fit.
+
+It is a pre-load estimate, not a guarantee. See [Limits](#limits).
 
 ## Why?
 
-If you run local inference on consumer GPUs, you know the pain:
+Loading a model that does not fit can end in an out-of-memory error, a hung GPU or, on some desktop setups, a frozen session. A one-second check first lets a script pick a smaller model or wait until memory is free.
 
-| Without gpu-memory-guard | With gpu-memory-guard |
+| Without a check | With gpu-memory-guard |
 |---|---|
-| Load 70B model on 24GB card | Check VRAM **before** loading |
-| System freezes, GPU hangs | Get a clear warning in terminal |
-| Force reboot, lose unsaved work | Pick a smaller model or free memory |
-| Repeat next week | Zero OOM crashes |
+| Start loading a 70B model on a 24 GB card | Check free VRAM **before** loading |
+| Find out from an OOM error or a hang | Get a clear message or exit code |
+| Free memory and try again | Pick a smaller model or quantization up front |
 
-One command saves you from constant reboots.
-
-## Quick Start
+## Quick start
 
 ```bash
-git clone https://github.com/CastelDazur/gpu-memory-guard.git
-cd gpu-memory-guard
-pip install -e .
+pip install gpu-memory-guard
 ```
 
 ```bash
-# Check current GPU status
+# Current GPU status
 gpu-guard
 
-# Check if an 18GB model fits with 2GB safety buffer
+# Is there room for an 18 GB model with a 2 GB safety buffer?
 gpu-guard --model-size 18 --buffer 2
 ```
 
-**Example output:**
+**Real output** (RTX 5090, nothing else loaded):
 
 ```
-GPU 0: NVIDIA GeForce RTX 5090
-  Total:     32.00 GB
-  Used:       4.12 GB
-  Available: 27.88 GB
+GPU Memory Status
+============================================================
 
-Model size: 18.00 GB (buffer: 2.00 GB)
-Status: OK - model fits with 7.88 GB to spare
+GPU 0: NVIDIA GeForce RTX 5090
+  Total:       31.84GB
+  Used:         0.99GB
+  Available:   30.44GB
+  Util:          0.0%
+
+------------------------------------------------------------
+Total available across all GPUs: 30.44GB
+
+Model size:     18.00GB
+Safety buffer:  2.00GB
+Total required: 20.00GB
+------------------------------------------------------------
+✓ Estimated to fit (10.44GB margin)
 ```
 
 ## Documentation
@@ -54,7 +61,12 @@ Status: OK - model fits with 7.88 GB to spare
 
 ## Installation
 
-### From source (recommended)
+```bash
+pip install gpu-memory-guard            # uses nvidia-smi
+pip install "gpu-memory-guard[pynvml]"  # also installs pynvml
+```
+
+From source:
 
 ```bash
 git clone https://github.com/CastelDazur/gpu-memory-guard.git
@@ -65,46 +77,55 @@ pip install -e .
 ### Requirements
 
 - Python 3.8+
-- NVIDIA GPU with `nvidia-smi` installed, OR
-- `pynvml` Python package (`pip install pynvml`)
+- An NVIDIA GPU and driver, with either `nvidia-smi` on `PATH` or the `pynvml` package. `pynvml` is tried first, `nvidia-smi` second.
 
 ## Usage
 
 ### CLI
 
 ```bash
-# Basic VRAM check
+# GPU status only
 gpu-guard
 
-# Check if a model fits (size in GB)
+# Check a model size in GB (default safety buffer: 0.5 GB)
 gpu-guard --model-size 13
 
-# Custom safety buffer (default: 1GB)
+# Custom safety buffer
 gpu-guard --model-size 18 --buffer 2
 
-# JSON output for scripting
+# JSON for scripts
 gpu-guard --model-size 13 --json
 
-# Quiet mode: exit code only (0 = fits, 1 = doesn't)
+# Exit code only
 gpu-guard --model-size 7 --quiet
 ```
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| `0` | Estimated to fit, or status shown without `--model-size` |
+| `1` | Estimated NOT to fit |
+| `2` | No GPU detected (neither `pynvml` nor `nvidia-smi` worked) |
+
+`--json` prints the per-GPU numbers plus `model_size_gb`, `buffer_gb`, `total_required_gb` and `can_fit` when `--model-size` is given.
 
 ### As a Python library
 
 ```python
-from gpu_guard import check_vram, can_load_model, get_gpu_info
+from gpu_guard import can_load_model, check_vram, get_gpu_info
 
-# Check current VRAM
-gpu_info = get_gpu_info()
-for gpu in gpu_info:
-    print(f"GPU {gpu.device_id}: {gpu.available_memory_gb:.2f}GB available")
+# Per-GPU numbers (None if no GPU could be queried)
+for gpu in get_gpu_info() or []:
+    print(f"GPU {gpu.device_id}: {gpu.available_memory_gb:.2f} GB available")
 
-# Check if a model fits
-result = can_load_model(model_size_gb=13.0, buffer_gb=2.0)
-if result.fits:
-    print("Safe to load")
-else:
-    print(f"Need {result.shortage_gb:.2f}GB more VRAM")
+# True / False
+if can_load_model(model_size_gb=13.0, buffer_gb=2.0):
+    print("Estimated to fit")
+
+# (bool, message) with the numbers behind the decision
+fits, message = check_vram(model_size_gb=13.0, buffer_gb=2.0)
+print(fits, message)  # e.g. True Total available: 30.44GB, required: 15.00GB
 ```
 
 ### Scripting example
@@ -114,10 +135,17 @@ else:
 if gpu-guard --model-size 13 --quiet; then
     python run_inference.py --model llama-13b
 else
-    echo "Not enough VRAM, switching to 7B model"
+    echo "Probably not enough VRAM, switching to 7B model"
     python run_inference.py --model llama-7b
 fi
 ```
+
+## Limits
+
+- **Free VRAM now is not peak usage later.** The check compares a number you give with memory that is free at this moment. Context length and KV cache, the runtime's own overhead, activation memory and other processes that start afterwards all add to real usage. Enter the size you expect at peak, not just the weights file, and keep a buffer. [MODEL_COMPATIBILITY.md](MODEL_COMPATIBILITY.md) has sizing tables.
+- **Multiple GPUs are summed.** The total is free memory across all cards. A model that is not split across GPUs needs the space on one card; the CLI prints a note when more than one GPU is present.
+- **NVIDIA only.** AMD and Apple GPUs are not detected.
+- **It does not stop anything.** The tool reports; it does not reserve memory or prevent another process from taking it between the check and the load.
 
 ## Common model sizes (approximate VRAM)
 
@@ -128,12 +156,13 @@ fi
 | 33B params | ~66 GB | ~18 GB |
 | 70B params | ~140 GB | ~35 GB |
 
+Weights only; add context/KV cache and runtime overhead.
+
 ## Roadmap
 
 - [ ] AMD ROCm support
 - [ ] Memory estimation by model architecture
 - [ ] Multi-GPU split recommendations
-- [ ] PyPI package (`pip install gpu-memory-guard`)
 - [ ] Integration with Ollama and vLLM
 
 ## Contributing
