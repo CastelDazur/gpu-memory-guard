@@ -93,6 +93,9 @@ gpu-guard --model-size 13
 # Custom safety buffer
 gpu-guard --model-size 18 --buffer 2
 
+# Several GPUs, model not split: require the space on one card
+gpu-guard --model-size 13 --per-gpu
+
 # JSON for scripts
 gpu-guard --model-size 13 --json
 
@@ -143,7 +146,7 @@ fi
 ## Limits
 
 - **Free VRAM now is not peak usage later.** The check compares a number you give with memory that is free at this moment. Context length and KV cache, the runtime's own overhead, activation memory and other processes that start afterwards all add to real usage. Enter the size you expect at peak, not just the weights file, and keep a buffer. [MODEL_COMPATIBILITY.md](MODEL_COMPATIBILITY.md) has sizing tables.
-- **Multiple GPUs are summed.** The total is free memory across all cards. A model that is not split across GPUs needs the space on one card; the CLI prints a note when more than one GPU is present.
+- **Multiple GPUs are summed.** The total is free memory across all cards. A model that is not split across GPUs needs the space on one card: use `--per-gpu` (or `per_gpu=True` in Python). Without it the CLI prints a note when more than one GPU is present.
 - **NVIDIA only.** AMD and Apple GPUs are not detected.
 - **It does not stop anything.** The tool reports; it does not reserve memory or prevent another process from taking it between the check and the load.
 

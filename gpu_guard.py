@@ -128,13 +128,16 @@ def get_gpu_info() -> Optional[List[GPUInfo]]:
     return None
 
 
-def check_vram(model_size_gb: float, buffer_gb: float = 0.5) -> Tuple[bool, str]:
+def check_vram(
+    model_size_gb: float, buffer_gb: float = 0.5, per_gpu: bool = False
+) -> Tuple[bool, str]:
     """
     Check if sufficient VRAM is available for a model.
 
     Args:
         model_size_gb: Model size in GB
         buffer_gb: Safety buffer in GB (default 0.5)
+        per_gpu: Require the space on one card instead of summing all cards
 
     Returns:
         (can_fit, message) tuple
@@ -148,9 +151,17 @@ def check_vram(model_size_gb: float, buffer_gb: float = 0.5) -> Tuple[bool, str]
     if not gpu_info:
         return (False, "No GPUs detected.")
 
-    total_available = sum(gpu.available_memory_gb for gpu in gpu_info)
     required = model_size_gb + buffer_gb
 
+    if per_gpu:
+        best = max(gpu_info, key=lambda gpu: gpu.available_memory_gb)
+        message = (
+            f"Most free on one card: {best.available_memory_gb:.2f}GB "
+            f"(GPU {best.device_id}), required: {required:.2f}GB"
+        )
+        return (best.available_memory_gb >= required, message)
+
+    total_available = sum(gpu.available_memory_gb for gpu in gpu_info)
     can_fit = total_available >= required
 
     message = f"Total available: {total_available:.2f}GB, required: {required:.2f}GB"
@@ -158,22 +169,25 @@ def check_vram(model_size_gb: float, buffer_gb: float = 0.5) -> Tuple[bool, str]
     return (can_fit, message)
 
 
-def can_load_model(model_size_gb: float, buffer_gb: float = 0.5) -> bool:
+def can_load_model(
+    model_size_gb: float, buffer_gb: float = 0.5, per_gpu: bool = False
+) -> bool:
     """
-    Estimate whether a model fits in free VRAM (summed across all GPUs).
+    Estimate whether a model fits in free VRAM (all GPUs, or one if per_gpu).
 
     Args:
         model_size_gb: Model size in GB
         buffer_gb: Safety buffer in GB
+        per_gpu: Require the space on one card instead of summing all cards
 
     Returns:
         True if free VRAM >= model size + buffer, False otherwise
     """
-    fits, _ = check_vram(model_size_gb, buffer_gb)
+    fits, _ = check_vram(model_size_gb, buffer_gb, per_gpu)
     return fits
 
 
-def format_human_output(gpu_info, model_size_gb=None, buffer_gb=0.5):
+def format_human_output(gpu_info, model_size_gb=None, buffer_gb=0.5, per_gpu=False):
     """Format GPU info for human-readable output."""
     lines = []
     lines.append("GPU Memory Status")
@@ -190,7 +204,7 @@ def format_human_output(gpu_info, model_size_gb=None, buffer_gb=0.5):
 
     lines.append("\n" + "-" * 60)
     lines.append(f"Total available across all GPUs: {total_available:.2f}GB")
-    if len(gpu_info) > 1:
+    if len(gpu_info) > 1 and not per_gpu:
         lines.append("Note: this is a sum. A model that is not split across GPUs needs the space on one card.")
 
     if model_size_gb is not None:
@@ -200,17 +214,23 @@ def format_human_output(gpu_info, model_size_gb=None, buffer_gb=0.5):
         lines.append(f"Total required: {required:.2f}GB")
         lines.append("-" * 60)
 
-        if total_available >= required:
-            margin = total_available - required
+        available = total_available
+        if per_gpu:
+            best = max(gpu_info, key=lambda gpu: gpu.available_memory_gb)
+            available = best.available_memory_gb
+            lines.append(f"Most free on one card: {available:.2f}GB (GPU {best.device_id})")
+
+        if available >= required:
+            margin = available - required
             lines.append(f"\u2713 Estimated to fit ({margin:.2f}GB margin)")
         else:
-            deficit = required - total_available
+            deficit = required - available
             lines.append(f"\u2717 Estimated NOT to fit (need {deficit:.2f}GB more)")
 
     return "\n".join(lines)
 
 
-def format_json_output(gpu_info, model_size_gb=None, buffer_gb=0.5):
+def format_json_output(gpu_info, model_size_gb=None, buffer_gb=0.5, per_gpu=False):
     """Format output as JSON."""
     total_available = sum(gpu.available_memory_gb for gpu in gpu_info)
 
@@ -227,6 +247,14 @@ def format_json_output(gpu_info, model_size_gb=None, buffer_gb=0.5):
             "total_required_gb": required,
             "can_fit": total_available >= required,
         })
+        if per_gpu:
+            best = max(gpu_info, key=lambda gpu: gpu.available_memory_gb)
+            output.update({
+                "per_gpu": True,
+                "best_gpu_id": best.device_id,
+                "best_gpu_available_gb": best.available_memory_gb,
+                "can_fit": best.available_memory_gb >= required,
+            })
 
     return json.dumps(output, indent=2)
 
@@ -268,6 +296,11 @@ Examples:
         help="Safety buffer in GB (default: 0.5)",
     )
     parser.add_argument(
+        "--per-gpu",
+        action="store_true",
+        help="Require the space on one card instead of summing all cards",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Output as JSON",
@@ -297,18 +330,18 @@ Examples:
         sys.exit(2)
 
     if args.quiet and args.model_size is not None:
-        fits, _ = check_vram(args.model_size, args.buffer)
+        fits, _ = check_vram(args.model_size, args.buffer, args.per_gpu)
         sys.exit(0 if fits else 1)
 
     if args.json:
-        output = format_json_output(gpu_info, args.model_size, args.buffer)
+        output = format_json_output(gpu_info, args.model_size, args.buffer, args.per_gpu)
         print(output)
     else:
-        output = format_human_output(gpu_info, args.model_size, args.buffer)
+        output = format_human_output(gpu_info, args.model_size, args.buffer, args.per_gpu)
         print(output)
 
     if args.model_size is not None:
-        fits, _ = check_vram(args.model_size, args.buffer)
+        fits, _ = check_vram(args.model_size, args.buffer, args.per_gpu)
         sys.exit(0 if fits else 1)
 
     sys.exit(0)
