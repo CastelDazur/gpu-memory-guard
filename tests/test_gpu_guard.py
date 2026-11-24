@@ -249,3 +249,45 @@ class TestExitCodes:
             with pytest.raises(SystemExit) as e:
                 main()
         assert e.value.code == 0
+
+
+class TestPerGpu:
+    """Two cards with 6 and 10 GB free: 16 GB in total, 10 GB on the best card."""
+
+    def _gpus(self):
+        return [GPUInfo(0, "A", 24.0, 18.0, 6.0, 0.0), GPUInfo(1, "B", 24.0, 14.0, 10.0, 0.0)]
+
+    def _main(self, argv):
+        from gpu_guard import main
+        with patch("gpu_guard.get_gpu_info", return_value=self._gpus()), \
+                patch.object(sys, "argv", ["gpu-guard"] + argv):
+            with pytest.raises(SystemExit) as e:
+                main()
+        return e.value.code
+
+    def test_sum_fits_but_no_single_card_does(self):
+        with patch("gpu_guard.get_gpu_info", return_value=self._gpus()):
+            assert can_load_model(12.0, 0.5) is True
+            assert can_load_model(12.0, 0.5, per_gpu=True) is False
+
+    def test_fits_on_the_card_with_most_free_memory(self):
+        with patch("gpu_guard.get_gpu_info", return_value=self._gpus()):
+            fits, message = check_vram(9.5, 0.5, per_gpu=True)
+        assert fits is True and "GPU 1" in message
+
+    def test_exit_codes(self):
+        assert self._main(["--model-size", "12", "--quiet"]) == 0
+        assert self._main(["--model-size", "12", "--quiet", "--per-gpu"]) == 1
+        assert self._main(["--model-size", "9", "--quiet", "--per-gpu"]) == 0
+
+    def test_human_and_json_agree(self, capsys):
+        assert self._main(["--model-size", "12", "--per-gpu"]) == 1
+        out = capsys.readouterr().out
+        assert "Estimated NOT to fit (need 2.50GB more)" in out and "this is a sum" not in out
+        assert self._main(["--model-size", "12", "--per-gpu", "--json"]) == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["can_fit"] is False and data["best_gpu_id"] == 1
+
+    def test_json_without_the_flag_is_unchanged(self):
+        data = json.loads(format_json_output(self._gpus(), 12.0))
+        assert data["can_fit"] is True and "per_gpu" not in data
